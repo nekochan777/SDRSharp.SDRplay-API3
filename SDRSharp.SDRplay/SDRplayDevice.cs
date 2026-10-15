@@ -177,8 +177,7 @@ namespace SDRSharp.SDRplay
                 _sampleRateIndex = value;
                 if (_running)
                 {
-                    Stop();
-                    SDRplay_Initalisation();
+                    UpdateSampleRate();
                     OnSampleRateChanged();
                 }
             }
@@ -190,11 +189,7 @@ namespace SDRSharp.SDRplay
             set
             {
                 _bandwidth = value;
-                if (_running)
-                {
-                    Stop();
-                    SDRplay_Initalisation();
-                }
+                if (_running) UpdateTunerFormat();
             }
         }
 
@@ -204,11 +199,7 @@ namespace SDRSharp.SDRplay
             set
             {
                 _ifTypeIndex = value;
-                if (_running)
-                {
-                    Stop();
-                    SDRplay_Initalisation();
-                }
+                if (_running) UpdateTunerFormat();
             }
         }
 
@@ -397,11 +388,7 @@ namespace SDRSharp.SDRplay
                 Trace.WriteLine($"SDRplay: RxChannelA before: bw={ch.tunerParams.bwType} if={ch.tunerParams.ifType} rfHz={ch.tunerParams.rfFreq.rfHz} gRdB={ch.tunerParams.gain.gRdB} LNA={ch.tunerParams.gain.LNAstate}");
 
                 ch.tunerParams.bwType = _bandwidth;
-                ch.tunerParams.ifType = (_ifTypeIndex == 0)
-                    ? NativeMethods.sdrplay_api_If_kHzT.sdrplay_api_IF_Zero
-                    : NativeMethods.sdrplay_api_If_kHzT.sdrplay_api_IF_0_450;
-                if (_ifTypeIndex != 0 && _bandwidth == NativeMethods.sdrplay_api_Bw_MHzT.sdrplay_api_BW_1_536)
-                    ch.tunerParams.ifType = NativeMethods.sdrplay_api_If_kHzT.sdrplay_api_IF_2_048;
+                ch.tunerParams.ifType = ResolveIfType();
                 ch.tunerParams.loMode = NativeMethods.sdrplay_api_LoModeT.sdrplay_api_LO_Auto;
 
                 ch.tunerParams.gain.gRdB = _gainReduction;
@@ -431,6 +418,79 @@ namespace SDRSharp.SDRplay
             else
             {
                 Trace.WriteLine("SDRplay: WARNING rxChannelA is null");
+            }
+        }
+
+        /// <summary>IF type for the current IFType/bandwidth selection (Zero vs Low-IF, 2.048 for 1.536 BW).</summary>
+        private NativeMethods.sdrplay_api_If_kHzT ResolveIfType()
+        {
+            if (_ifTypeIndex == 0)
+                return NativeMethods.sdrplay_api_If_kHzT.sdrplay_api_IF_Zero;
+            if (_bandwidth == NativeMethods.sdrplay_api_Bw_MHzT.sdrplay_api_BW_1_536)
+                return NativeMethods.sdrplay_api_If_kHzT.sdrplay_api_IF_2_048;
+            return NativeMethods.sdrplay_api_If_kHzT.sdrplay_api_IF_0_450;
+        }
+
+        /// <summary>Live sample-rate change (no device teardown).</summary>
+        private void UpdateSampleRate()
+        {
+            if (_devHandle == IntPtr.Zero || _deviceParamsPtr == IntPtr.Zero)
+                return;
+            try
+            {
+                var top = Marshal.PtrToStructure<NativeMethods.sdrplay_api_DeviceParamsT>(_deviceParamsPtr);
+                if (top.devParams == IntPtr.Zero) return;
+
+                int idx = Math.Max(0, Math.Min(_sampleRateIndex, SampleRatesKHz.Length - 1));
+                var dp = Marshal.PtrToStructure<NativeMethods.sdrplay_api_DevParamsT>(top.devParams);
+                dp.fsFreq.fsHz = SampleRatesKHz[idx] * 1000.0;
+                dp.fsFreq.syncUpdate = 0;
+                dp.fsFreq.reCal = 0;
+                Marshal.StructureToPtr(dp, top.devParams, false);
+
+                var err = NativeMethods.sdrplay_api_Update(
+                    _devHandle,
+                    NativeMethods.sdrplay_api_TunerSelectT.sdrplay_api_Tuner_A,
+                    NativeMethods.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Dev_Fs,
+                    NativeMethods.sdrplay_api_ReasonForUpdateExtension1T.sdrplay_api_Update_Ext1_None);
+
+                if (err != NativeMethods.sdrplay_api_ErrT.sdrplay_api_Success)
+                    Trace.WriteLine("SDRplay: UpdateSampleRate failed: " + NativeMethods.GetErrorString(err));
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine("SDRplay: UpdateSampleRate exception: " + ex.Message);
+            }
+        }
+
+        /// <summary>Live bandwidth + IF-type change (no device teardown).</summary>
+        private void UpdateTunerFormat()
+        {
+            if (_devHandle == IntPtr.Zero || _deviceParamsPtr == IntPtr.Zero)
+                return;
+            try
+            {
+                var top = Marshal.PtrToStructure<NativeMethods.sdrplay_api_DeviceParamsT>(_deviceParamsPtr);
+                if (top.rxChannelA == IntPtr.Zero) return;
+
+                var ch = Marshal.PtrToStructure<NativeMethods.sdrplay_api_RxChannelParamsT>(top.rxChannelA);
+                ch.tunerParams.bwType = _bandwidth;
+                ch.tunerParams.ifType = ResolveIfType();
+                Marshal.StructureToPtr(ch, top.rxChannelA, false);
+
+                var err = NativeMethods.sdrplay_api_Update(
+                    _devHandle,
+                    NativeMethods.sdrplay_api_TunerSelectT.sdrplay_api_Tuner_A,
+                    NativeMethods.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Tuner_BwType
+                        | NativeMethods.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Tuner_IfType,
+                    NativeMethods.sdrplay_api_ReasonForUpdateExtension1T.sdrplay_api_Update_Ext1_None);
+
+                if (err != NativeMethods.sdrplay_api_ErrT.sdrplay_api_Success)
+                    Trace.WriteLine("SDRplay: UpdateTunerFormat failed: " + NativeMethods.GetErrorString(err));
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine("SDRplay: UpdateTunerFormat exception: " + ex.Message);
             }
         }
 

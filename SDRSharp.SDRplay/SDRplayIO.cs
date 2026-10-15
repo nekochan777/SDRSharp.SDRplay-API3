@@ -43,12 +43,23 @@ private const string _displayName = "SDRplay RSP";
             }
             else
             {
-                APIPath = (string)ApiPathkey.GetValue("Install_Dir", 0);
-                APIPath = APIPath + "\\x86";
-                ExistingPaths = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-                UpdatedPaths = ExistingPaths + Path.PathSeparator.ToString() + APIPath;
-                Environment.SetEnvironmentVariable("PATH", UpdatedPaths);
+                string installDir = ApiPathkey.GetValue("Install_Dir", null) as string;
                 ApiPathkey.Close();
+                if (string.IsNullOrEmpty(installDir))
+                {
+                    MessageBox.Show("Cannot locate SDRplay API Install_Dir");
+                }
+                else
+                {
+                    APIPath = Path.Combine(installDir, Environment.Is64BitProcess ? "x64" : "x86");
+                    ExistingPaths = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+                    // Prepend (not append) so our API dir wins, and skip if already present
+                    if (ExistingPaths.IndexOf(APIPath, StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        UpdatedPaths = APIPath + Path.PathSeparator + ExistingPaths;
+                        Environment.SetEnvironmentVariable("PATH", UpdatedPaths);
+                    }
+                }
             }
             _gui = new SDRplayControllerDialog(this);
             SDRplayDevice = new SDRplayDevice();
@@ -151,9 +162,8 @@ private const string _displayName = "SDRplay RSP";
             set
             {
                 SampleRateIndex = value;
-                SDRplayDevice.SampleRateIndex = value;
+                SDRplayDevice.SampleRateIndex = value; // fires OnSampleRateChanged itself when streaming
                 Utils.SaveSetting("SDRplay.SampleRate", value);
-                SDRplayDevice.OnSampleRateChanged();
             }
         }
 
@@ -195,8 +205,16 @@ private const string _displayName = "SDRplay RSP";
 
         private void SDRplayDevice_GainReductionUpdate(object sender, EventArgs e)
         {
-            _gui.GRboxUpdate(SDRplayDevice.GainReduction, Frequency);
+            // Raised on the native SDRplay event thread. Marshal UI work onto the
+            // dialog's thread; touching WinForms controls off-thread crashes SDR#.
             _GainReduction = SDRplayDevice.GainReduction;
+            if (_gui == null || _gui.IsDisposed || !_gui.IsHandleCreated)
+                return;
+            _gui.BeginInvoke((Action)(() =>
+            {
+                if (!_gui.IsDisposed)
+                    _gui.GRboxUpdate(SDRplayDevice.GainReduction, Frequency);
+            }));
         }
 
         private unsafe void SDRplayDevice_SamplesAvailable(object sender, SamplesAvailableEventArgs e)
